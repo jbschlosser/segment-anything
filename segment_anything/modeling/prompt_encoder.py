@@ -79,8 +79,8 @@ class PromptEncoder(nn.Module):
         """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
         if pad:
-            padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
-            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
+            padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device, dtype=points.dtype)
+            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device, dtype=points.dtype)
             points = torch.cat([points, padding_point], dim=1)
             labels = torch.cat([labels, padding_label], dim=1)
         point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
@@ -165,7 +165,7 @@ class PromptEncoder(nn.Module):
                 bs, -1, self.image_embedding_size[0], self.image_embedding_size[1]
             )
 
-        return sparse_embeddings, dense_embeddings
+        return sparse_embeddings.to(dense_embeddings.dtype), dense_embeddings
 
 
 class PositionEmbeddingRandom(nn.Module):
@@ -195,7 +195,7 @@ class PositionEmbeddingRandom(nn.Module):
         """Generate positional encoding for a grid of the specified size."""
         h, w = size
         device: Any = self.positional_encoding_gaussian_matrix.device
-        grid = torch.ones((h, w), device=device, dtype=torch.float32)
+        grid = torch.ones((h, w), device=device, dtype=self.positional_encoding_gaussian_matrix.dtype)
         y_embed = grid.cumsum(dim=0) - 0.5
         x_embed = grid.cumsum(dim=1) - 0.5
         y_embed = y_embed / h
@@ -211,4 +211,4 @@ class PositionEmbeddingRandom(nn.Module):
         coords = coords_input.clone()
         coords[:, :, 0] = coords[:, :, 0] / image_size[1]
         coords[:, :, 1] = coords[:, :, 1] / image_size[0]
-        return self._pe_encoding(coords.to(torch.float))  # B x N x C
+        return self._pe_encoding(coords) # .to(torch.float))  # B x N x C
