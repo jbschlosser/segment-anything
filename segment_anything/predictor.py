@@ -76,17 +76,38 @@ class SamPredictor:
           original_image_size (tuple(int, int)): The size of the image
             before transformation, in (H, W) format.
         """
-        assert (
-            len(transformed_image.shape) == 4
-            and transformed_image.shape[1] == 3
-            and max(*transformed_image.shape[2:]) == self.model.image_encoder.img_size
-        ), f"set_torch_image input must be BCHW with long side {self.model.image_encoder.img_size}."
         self.reset_image()
 
         self.original_size = original_image_size
         self.input_size = tuple(transformed_image.shape[-2:])
         input_image = self.model.preprocess(transformed_image)
         self.features = self.model.image_encoder(input_image)
+        self.is_image_set = True
+
+    @torch.no_grad()
+    def set_torch_images(
+        self,
+        transformed_images: torch.Tensor,
+        original_image_sizes: torch.Tensor
+    ) -> None:
+        """
+        Calculates the image embeddings for the provided image, allowing
+        masks to be predicted with the 'predict' method. Expects the input
+        image to be already transformed to the format expected by the model.
+
+        Arguments:
+          transformed_image (torch.Tensor): The input images, with shape
+            Bx3xHxW, which has been transformed with ResizeLongestSide.
+          original_image_sizes (torch.Tensor): The sizes of the image
+            before transformation, in Bx2 format with the 2 being (H, W).
+        """
+        self.reset_image()
+
+        self.original_sizes = original_image_sizes
+        # TODO: Avoid using a private API
+        self.input_sizes = transformed_images._nested_tensor_size()[:, -2:]
+        input_images = self.model.preprocess(transformed_images)
+        self.features = self.model.image_encoder(input_images)
         self.is_image_set = True
 
     def predict(
@@ -226,7 +247,7 @@ class SamPredictor:
         )
 
         # Predict masks
-        low_res_masks, iou_predictions = self.model.mask_decoder(
+        low_res_masks, iou_predictions, offsets = self.model.mask_decoder(
             image_embeddings=self.features,
             image_pe=self.model.prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embeddings,
@@ -234,11 +255,17 @@ class SamPredictor:
             multimask_output=multimask_output,
         )
 
-        # Upscale the masks to the original image resolution
-        masks = self.model.postprocess_masks(low_res_masks, self.input_size, self.original_size)
+        # Upscale the masks to the original image resolution and apply mask thresholding
+        apply_threshold = None if return_logits else self.model.mask_threshold
+        masks = self.model.postprocess_masks_batch(
+            low_res_masks, offsets, self.input_sizes, self.original_sizes, apply_threshold)
 
-        if not return_logits:
-            masks = masks > self.model.mask_threshold
+        # Convert iou_predictions -> NT
+        iou_pred_components = []
+        for begin, end in zip(offsets[0:-1], offsets[1:]):
+            begin, end = begin.item(), end.item()
+            iou_pred_components.append(iou_predictions[begin:end, :])
+        iou_predictions = torch.nested.nested_tensor(iou_pred_components)
 
         return masks, iou_predictions, low_res_masks
 

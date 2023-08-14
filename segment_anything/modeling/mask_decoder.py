@@ -91,7 +91,7 @@ class MaskDecoder(nn.Module):
           torch.Tensor: batched predicted masks
           torch.Tensor: batched predictions of mask quality
         """
-        masks, iou_pred = self.predict_masks(
+        masks, iou_pred, offsets = self.predict_masks(
             image_embeddings=image_embeddings,
             image_pe=image_pe,
             sparse_prompt_embeddings=sparse_prompt_embeddings,
@@ -107,7 +107,7 @@ class MaskDecoder(nn.Module):
         iou_pred = iou_pred[:, mask_slice]
 
         # Prepare output
-        return masks, iou_pred
+        return masks, iou_pred, offsets
 
     def predict_masks(
         self,
@@ -119,13 +119,22 @@ class MaskDecoder(nn.Module):
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
         output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
-        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
-        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
+        tokens = torch.nested.nested_tensor(
+            [torch.cat([output_tokens.expand(t.shape[0], -1, -1), t], dim=1)
+             for t in sparse_prompt_embeddings.unbind()])
 
-        # Expand per-image data in batch direction to be per-mask
-        src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
-        src = src + dense_prompt_embeddings
-        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
+        offsets = torch.cat([torch.zeros(1, dtype=torch.int64),
+                             tokens._nested_tensor_size()[:, 0].cumsum(dim=0)])
+
+        srcs = []
+        token_inputs = []
+        for image_embedding, dense_prompt_embedding, token in \
+                zip(image_embeddings, dense_prompt_embeddings, tokens):
+            srcs.append(image_embedding + dense_prompt_embedding)
+            token_inputs.append(token)
+        src = torch.cat(srcs, dim=0)
+        pos_src = torch.repeat_interleave(image_pe, src.size(0), dim=0)
+        tokens = torch.cat(token_inputs, dim=0)
         b, c, h, w = src.shape
 
         # Run the transformer
@@ -146,7 +155,7 @@ class MaskDecoder(nn.Module):
         # Generate mask quality predictions
         iou_pred = self.iou_prediction_head(iou_token_out)
 
-        return masks, iou_pred
+        return masks, iou_pred, offsets
 
 
 # Lightly adapted from

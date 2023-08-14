@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
@@ -161,14 +161,47 @@ class Sam(nn.Module):
         masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         return masks
 
+    def postprocess_masks_batch(
+        self,
+        masks: torch.Tensor,
+        offsets: torch.Tensor,
+        input_sizes: torch.Tensor,
+        original_sizes: torch.Tensor,
+        apply_threshold: Optional[float]
+    ) -> torch.Tensor:
+        masks = F.interpolate(
+            masks,
+            (self.image_encoder.img_size, self.image_encoder.img_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        mask_components = []
+        for begin, end, input_size, original_size in zip(
+                offsets[0:-1], offsets[1:], input_sizes, original_sizes):
+            begin, end = begin.item(), end.item()
+            mask_comp = masks[begin:end, :, :input_size[0], :input_size[1]]
+            mask_comp = F.interpolate(
+                mask_comp,
+                (original_size[0].item(), original_size[1].item()),
+                mode="bilinear",
+                align_corners=False)
+            if apply_threshold is not None:
+                mask_comp = mask_comp > apply_threshold
+            mask_components.append(mask_comp)
+        return torch.nested.nested_tensor(mask_components)
+
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize pixel values and pad to a square input."""
         # Normalize colors
         x = (x - self.pixel_mean) / self.pixel_std
 
         # Pad
-        h, w = x.shape[-2:]
-        padh = self.image_encoder.img_size - h
-        padw = self.image_encoder.img_size - w
-        x = F.pad(x, (0, padw, 0, padh))
-        return x
+        if x.is_nested:
+            out_size = (x.size(0), 3, self.image_encoder.img_size, self.image_encoder.img_size)
+            return torch.nested.to_padded_tensor(x, 0.0, output_size=out_size)
+        else:
+            h, w = x.shape[-2:]
+            padh = self.image_encoder.img_size - h
+            padw = self.image_encoder.img_size - w
+            x = F.pad(x, (0, padw, 0, padh))
+            return x
