@@ -235,7 +235,8 @@ class Attention(nn.Module):
         q = q.view(B, self.num_heads, H * W, -1)
         k = k.view(B, self.num_heads, H * W, -1)
         v = v.view(B, self.num_heads, H * W, -1)
-        attn_bias = attn_bias.view(B, self.num_heads, attn_bias.size(-1), attn_bias.size(-1))
+        if self.use_rel_pos:
+            attn_bias = attn_bias.view(B, self.num_heads, attn_bias.size(-1), attn_bias.size(-1))
 
         x = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
 
