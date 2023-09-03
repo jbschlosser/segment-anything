@@ -236,22 +236,13 @@ class SamPredictor:
             sparse_embeddings = torch.nested.nested_tensor(sparse_embeddings)
             dense_embeddings = torch.nested.nested_tensor(dense_embeddings)
 
-            low_res_masks = []
-            iou_predictions = []
-            for i, (s, d) in enumerate(zip(sparse_embeddings.unbind(), dense_embeddings.unbind(), strict=True)):
-                features = self.features_batch.narrow(0, i, 1)
-                # Predict masks
-                lrm, ip = self.model.mask_decoder(
-                    image_embeddings=features,
-                    image_pe=self.model.prompt_encoder.get_dense_pe(),
-                    sparse_prompt_embeddings=s,
-                    dense_prompt_embeddings=d,
-                    multimask_output=multimask_output,
-                )
-                low_res_masks.append(lrm)
-                iou_predictions.append(ip)
-            low_res_masks = torch.nested.nested_tensor(low_res_masks)
-            iou_predictions = torch.nested.nested_tensor(iou_predictions)
+            low_res_masks, iou_predictions = self.model.mask_decoder(
+                image_embeddings=self.features_batch,
+                image_pe=self.model.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=multimask_output,
+            )
 
             masks = []
             for lrm, input_size, original_size in zip(low_res_masks.unbind(), self.input_sizes, self.original_sizes, strict=True):
