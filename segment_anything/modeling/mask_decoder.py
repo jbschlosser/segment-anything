@@ -186,8 +186,12 @@ class MaskDecoder(nn.Module):
         srcs = []
         token_inputs = []
         for image_embedding, dense_prompt_embedding, token in \
-                zip(image_embeddings, dense_prompt_embeddings, tokens):
-            srcs.append(image_embedding + dense_prompt_embedding)
+                zip(image_embeddings, dense_prompt_embeddings, tokens, strict=True):
+            if dense_prompt_embedding.size() != image_embedding.size():
+                # TODO: This is a hack to avoid using narrow
+                srcs.append(dense_prompt_embedding)
+            else:
+                srcs.append(image_embedding + dense_prompt_embedding)
             token_inputs.append(token)
         src = torch.cat(srcs, dim=0)
         pos_src = torch.repeat_interleave(image_pe, src.size(0), dim=0)

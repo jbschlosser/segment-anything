@@ -104,6 +104,38 @@ class ImageEncoderViT(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.is_nested:
+            x_nt = x
+            result = []
+            for x in x_nt.unbind():
+                # Biggest allowed size
+                assert x.size(1) <= 1024
+                assert x.size(2) <= 1024
+                x = x.unsqueeze(0)
+                x = self.patch_embed(x)
+                if self.pos_embed is not None:
+                    pos_embed = self.pos_embed
+                    if x.size(1) != self.pos_embed.size(1):
+                        pos_embed = pos_embed.narrow(1, 0, x.size(1))
+                    if x.size(2) != self.pos_embed.size(2):
+                        pos_embed = pos_embed.narrow(2, 0, x.size(2))
+                    x = x + pos_embed
+                x = x.squeeze(0)
+                result.append(x)
+
+            x = torch.nested.nested_tensor(result)
+            for blk in self.blocks:
+                x = blk(x)
+
+            x_nt = x
+            result = []
+            for x in x_nt.unbind():
+                x = x.unsqueeze(0)
+                x = self.neck(x.permute(0, 3, 1, 2))
+                x = x.squeeze(0)
+                result.append(x)
+            return torch.nested.nested_tensor(result)
+
         x = self.patch_embed(x)
         if self.pos_embed is not None:
             x = x + self.pos_embed
@@ -166,15 +198,32 @@ class Block(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shortcut = x
         x = self.norm1(x)
-        # Window partition
-        if self.window_size > 0:
-            H, W = x.shape[1], x.shape[2]
-            x, pad_hw = window_partition(x, self.window_size)
+        if x.is_nested:
+            x_nt = x
+            result = []
+            for x in x_nt.unbind():
+                x = x.unsqueeze(0)
+                # Window partition
+                if self.window_size > 0:
+                    H, W = x.shape[1], x.shape[2]
+                    x, pad_hw = window_partition(x, self.window_size)
 
-        x = self.attn(x)
-        # Reverse window partition
-        if self.window_size > 0:
-            x = window_unpartition(x, self.window_size, pad_hw, (H, W))
+                x = self.attn(x)
+                # Reverse window partition
+                if self.window_size > 0:
+                    x = window_unpartition(x, self.window_size, pad_hw, (H, W))
+                result.append(x.squeeze(0))
+            x = torch.nested.nested_tensor(result)
+        else:
+            # Window partition
+            if self.window_size > 0:
+                H, W = x.shape[1], x.shape[2]
+                x, pad_hw = window_partition(x, self.window_size)
+
+            x = self.attn(x)
+            # Reverse window partition
+            if self.window_size > 0:
+                x = window_unpartition(x, self.window_size, pad_hw, (H, W))
 
         x = shortcut + x
         x = x + self.mlp(self.norm2(x))
